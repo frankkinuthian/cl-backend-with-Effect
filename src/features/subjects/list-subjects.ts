@@ -1,0 +1,100 @@
+import { and, desc, eq, getTableColumns, ilike, or, sql, type SQL } from "drizzle-orm";
+import { Effect, Schema } from "effect";
+import { db as DbClient } from "../../database";
+import { departments, subjects } from "../../database/schema";
+import { Database } from "../database";
+import { DatabaseError, InvalidQuery } from "../errors";
+import { ListSubjectsQuery, normalizeExpressQuery } from "./schemas";
+
+type WhereClause = SQL | undefined;
+
+const tryDb = <A>(fn: () => Promise<A>) =>
+  Effect.tryPromise({
+    try: fn,
+    catch: (cause) => new DatabaseError({ cause }),
+  });
+
+function buildWhereClause(params: ListSubjectsQuery): WhereClause {
+  const filterConditions = [];
+
+  if (params.search) {
+    filterConditions.push(
+      or(
+        ilike(subjects.name, `%${params.search}%`),
+        ilike(subjects.code, `%${params.search}%`),
+      ),
+    );
+  }
+
+  if (params.department) {
+    filterConditions.push(ilike(departments.name, `%${params.department}%`));
+  }
+
+  return filterConditions.length > 0 ? and(...filterConditions) : undefined;
+}
+
+const countSubjects = (db: typeof DbClient, whereClause: WhereClause) =>
+  tryDb(async () => {
+    const countResult = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(subjects)
+      .leftJoin(departments, eq(subjects.departmentId, departments.id))
+      .where(whereClause);
+
+    return countResult[0]?.count ?? 0;
+  });
+
+const fetchSubjects = (
+  db: typeof DbClient,
+  whereClause: WhereClause,
+  limit: number,
+  offset: number,
+) =>
+  tryDb(() =>
+    db
+      .select({
+        ...getTableColumns(subjects),
+        department: {
+          ...getTableColumns(departments),
+        },
+      })
+      .from(subjects)
+      .leftJoin(departments, eq(subjects.departmentId, departments.id))
+      .where(whereClause)
+      .orderBy(desc(subjects.createdAt))
+      .limit(limit)
+      .offset(offset),
+  );
+
+export const listSubjects = (rawQuery: unknown) =>
+  Effect.gen(function* () {
+    const params = yield* Schema.decodeUnknown(ListSubjectsQuery)(
+      normalizeExpressQuery(rawQuery),
+    ).pipe(
+      Effect.mapError(
+        () => new InvalidQuery({ message: "Invalid query parameters" }),
+      ),
+    );
+
+    const db = yield* Database;
+    const whereClause = buildWhereClause(params);
+    const offset = (params.page - 1) * params.limit;
+
+    const [total, data] = yield* Effect.all(
+      [
+        countSubjects(db, whereClause),
+        fetchSubjects(db, whereClause, params.limit, offset),
+      ],
+      { concurrency: 2 },
+    );
+
+    return {
+      data,
+      pagination: {
+        page: params.page,
+        limit: params.limit,
+        total,
+        totalPages: Math.ceil(total / params.limit),
+      },
+    };
+  });
