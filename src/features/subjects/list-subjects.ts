@@ -1,5 +1,14 @@
-import { and, desc, eq, getTableColumns, ilike, or, sql, type SQL } from "drizzle-orm";
-import { Effect, Schema } from "effect";
+import {
+  and,
+  desc,
+  eq,
+  getTableColumns,
+  ilike,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
+import { Effect, Schedule, Schema } from "effect";
 import { db as DbClient } from "../../database";
 import { departments, subjects } from "../../database/schema";
 import { Database } from "../database";
@@ -12,7 +21,12 @@ const tryDb = <A>(fn: () => Promise<A>) =>
   Effect.tryPromise({
     try: fn,
     catch: (cause) => new DatabaseError({ cause }),
-  });
+  }).pipe(
+    Effect.retry({
+      times: 3,
+      schedule: Schedule.exponential("200 millis", 2),
+    }),
+  );
 
 function buildWhereClause(params: ListSubjectsQuery): WhereClause {
   const filterConditions = [];
