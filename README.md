@@ -1,6 +1,6 @@
 # Classroom Backend
 
-A TypeScript REST API for managing classroom data (departments and subjects). The server is built with **Express 5**, **Drizzle ORM**, and **Neon Postgres**, with business logic structured using **Effect-TS** for typed errors, schema validation, and dependency injection.
+A TypeScript REST API for managing classroom data (departments and subjects). The server is built with **Express 5**, **Drizzle ORM**, and **Neon Postgres**, with business logic structured using **Effect-TS** for typed errors, schema validation, and dependency injection. All requests pass through **Arcjet** security middleware for bot detection, WAF shielding, and role-based rate limiting.
 
 ---
 
@@ -18,6 +18,10 @@ A TypeScript REST API for managing classroom data (departments and subjects). Th
   - [Design Goals](#design-goals)
   - [Request Lifecycle](#request-lifecycle)
   - [Layer Responsibilities](#layer-responsibilities)
+- [Security Middleware](#security-middleware)
+  - [How It Works](#how-it-works)
+  - [Role-Based Rate Limits](#role-based-rate-limits)
+  - [Denial Reasons](#denial-reasons)
 - [Effect-TS Patterns](#effect-ts-patterns)
   - [Tagged Errors](#tagged-errors)
   - [Schema Validation](#schema-validation)
@@ -55,16 +59,17 @@ Express handles transport. Effect-TS handles **validation**, **typed failures**,
 
 ## Tech Stack
 
-| Layer | Technology | Purpose |
-|-------|------------|---------|
-| Runtime | Node.js (ESM) | Server runtime |
-| HTTP | Express 5 | Routing and middleware |
-| Language | TypeScript 6 (strict) | Type safety |
-| Database | PostgreSQL via [Neon](https://neon.tech) | Persistent storage |
-| ORM | Drizzle ORM | Schema, queries, migrations |
-| Functional effects | Effect 3 | Validation, errors, DI, concurrency |
-| Dev runner | tsx | Hot reload during development |
-| Package manager | pnpm | Dependency management |
+| Layer              | Technology                               | Purpose                                  |
+| ------------------ | ---------------------------------------- | ---------------------------------------- |
+| Runtime            | Node.js (ESM)                            | Server runtime                           |
+| HTTP               | Express 5                                | Routing and middleware                   |
+| Language           | TypeScript 6 (strict)                    | Type safety                              |
+| Database           | PostgreSQL via [Neon](https://neon.tech) | Persistent storage                       |
+| ORM                | Drizzle ORM                              | Schema, queries, migrations              |
+| Functional effects | Effect 3                                 | Validation, errors, DI, concurrency      |
+| Security           | [Arcjet](https://arcjet.com)             | Bot detection, WAF shield, rate limiting |
+| Dev runner         | tsx                                      | Hot reload during development            |
+| Package manager    | pnpm                                     | Dependency management                    |
 
 ---
 
@@ -83,15 +88,19 @@ Create a `.env` file in the project root:
 
 ```env
 DATABASE_URL=postgresql://user:password@host/database?sslmode=require
+FRONTEND_URL=http://localhost:5173
+ARCJET_KEY=ajkey_your_key_here
 PORT=8000
 ```
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `DATABASE_URL` | Yes | — | PostgreSQL connection string (Neon HTTP driver) |
-| `PORT` | No | `8000` | HTTP port. Railway and other hosts inject this automatically in production |
+| Variable       | Required | Default | Description                                                                |
+| -------------- | -------- | ------- | -------------------------------------------------------------------------- |
+| `DATABASE_URL` | Yes      | —       | PostgreSQL connection string (Neon HTTP driver)                            |
+| `FRONTEND_URL` | Yes      | —       | Allowed CORS origin for the frontend                                       |
+| `ARCJET_KEY`   | Yes      | —       | Arcjet API key — get one at [app.arcjet.com](https://app.arcjet.com)       |
+| `PORT`         | No       | `8000`  | HTTP port. Railway and other hosts inject this automatically in production |
 
-The app throws at startup if `DATABASE_URL` is missing (`src/database/index.ts`).
+The app throws at startup if `DATABASE_URL` or `ARCJET_KEY` is missing.
 
 ### Install & Run
 
@@ -140,16 +149,23 @@ classroom-backend/
 │   └── 0000_unusual_yellowjacket.sql
 ├── src/
 │   ├── index.ts                      # Express app entry point
+│   ├── config/
+│   │   └── arcjet.ts                 # Arcjet client + base rules
+│   ├── middleware/
+│   │   └── security.ts               # Arcjet Effect middleware
 │   ├── database/
 │   │   ├── index.ts                  # Drizzle + Neon connection
 │   │   └── schema/
 │   │       ├── index.ts              # Schema barrel export
-│   │       └── app.ts                # departments & subjects tables
+│   │       ├── app.ts                # departments & subjects tables
+│   │       └── auth.ts               # user, session, account, verification tables
 │   ├── features/
 │   │   ├── errors/
 │   │   │   └── index.ts              # Tagged error classes
 │   │   ├── database/
 │   │   │   └── index.ts              # Database Context tag + Layer
+│   │   ├── types/
+│   │   │   └── type.d.ts             # Shared ambient types (Schedule, UserRoles)
 │   │   └── subjects/
 │   │       ├── schemas.ts            # Query param Schema + normalization
 │   │       └── list-subjects.ts      # listSubjects Effect program
@@ -163,16 +179,19 @@ classroom-backend/
 
 ### File Roles
 
-| File | Responsibility |
-|------|----------------|
-| `src/index.ts` | Creates Express app, mounts routers, listens on `PORT` |
-| `src/routes/subjects.ts` | Wires `GET /` to `listSubjects`, maps tagged errors → HTTP status |
-| `src/features/subjects/list-subjects.ts` | Validates input, queries DB, returns paginated result |
-| `src/features/subjects/schemas.ts` | Effect Schema for query params; Express query normalization |
-| `src/features/errors/index.ts` | `InvalidQuery`, `DatabaseError` tagged error types |
-| `src/features/database/index.ts` | Injectable `Database` service via Effect `Layer` |
-| `src/database/index.ts` | Singleton Drizzle client (Neon HTTP) |
-| `src/database/schema/app.ts` | Table definitions and Drizzle relations |
+| File                                     | Responsibility                                                                     |
+| ---------------------------------------- | ---------------------------------------------------------------------------------- |
+| `src/index.ts`                           | Creates Express app, mounts routers, listens on `PORT`                             |
+| `src/config/arcjet.ts`                   | Arcjet client configured with shield, bot detection, and a baseline sliding window |
+| `src/middleware/security.ts`             | Arcjet Effect middleware — maps denials to typed errors, calls `next()` on allow   |
+| `src/routes/subjects.ts`                 | Wires `GET /` to `listSubjects`, maps tagged errors → HTTP status                  |
+| `src/features/subjects/list-subjects.ts` | Validates input, queries DB, returns paginated result                              |
+| `src/features/subjects/schemas.ts`       | Effect Schema for query params; Express query normalization                        |
+| `src/features/errors/index.ts`           | All tagged error types: `DatabaseError`, `InvalidQuery`, `ArcjetError` variants    |
+| `src/features/database/index.ts`         | Injectable `Database` service via Effect `Layer`                                   |
+| `src/database/index.ts`                  | Singleton Drizzle client (Neon HTTP)                                               |
+| `src/database/schema/app.ts`             | App table definitions and Drizzle relations                                        |
+| `src/database/schema/auth.ts`            | Auth table definitions (user, session, account, verification)                      |
 
 ---
 
@@ -234,6 +253,71 @@ res.status(...).json(...)
 
 ---
 
+## Security Middleware
+
+**Files:** `src/config/arcjet.ts`, `src/middleware/security.ts`
+
+Every request passes through Arcjet before reaching any route handler.
+
+### How It Works
+
+`src/config/arcjet.ts` defines the base Arcjet client with three always-on rules:
+
+- **Shield** — WAF-style protection against common web attacks (SQLi, XSS, etc.)
+- **Bot detection** — blocks automated clients; search engine crawlers and link preview bots are explicitly allowed
+- **Baseline sliding window** — a loose global cap (50 req / 2s) as a backstop
+
+`src/middleware/security.ts` wraps `client.protect()` in an Effect pipeline. It adds a per-request sliding window rule on top of the base client, sized by the authenticated user's role:
+
+```typescript
+const client = aj.withRule(
+  slidingWindow({ mode: "LIVE", interval: "1m", max: limit }),
+);
+
+const decision =
+  yield *
+  Effect.tryPromise({
+    try: () => client.protect(arcjetRequest),
+    catch: (cause) => new ArcjetError({ cause }),
+  });
+```
+
+Each denial reason maps to a distinct tagged error, handled in `catchTags` just like route errors:
+
+```typescript
+Effect.catchTags({
+  ArcjetBotError:       () => Effect.succeed({ status: 403, body: { error: "Forbidden", ... } }),
+  ArcjetShieldError:    () => Effect.succeed({ status: 403, body: { error: "Forbidden", ... } }),
+  ArcjetRateLimitError: (e) => Effect.succeed({ status: 429, body: { error: "Too Many Requests", message: e.message } }),
+  ArcjetError:          (e) => { console.error(e.cause); return Effect.succeed({ status: 500, ... }) },
+})
+```
+
+If the effect succeeds (decision is allowed), `response` is `null` and `next()` is called.
+
+### Role-Based Rate Limits
+
+The middleware reads `req.user?.role` (set by auth middleware upstream) to determine the per-minute cap:
+
+| Role                      | Limit        | Message                      |
+| ------------------------- | ------------ | ---------------------------- |
+| `admin`                   | 20 req / min | Admin request limit exceeded |
+| `teacher` / `student`     | 10 req / min | User request limit exceeded  |
+| `guest` (unauthenticated) | 25 req / min | Guest request limit exceeded |
+
+### Denial Reasons
+
+| Reason           | Status | Description                                  |
+| ---------------- | ------ | -------------------------------------------- |
+| Bot              | `403`  | Automated request from a non-whitelisted bot |
+| Shield           | `403`  | WAF rule triggered (attack pattern detected) |
+| Rate limit       | `429`  | Per-role sliding window exceeded             |
+| Unexpected throw | `500`  | `client.protect()` itself failed             |
+
+The middleware is skipped entirely when `NODE_ENV=test`.
+
+---
+
 ## Effect-TS Patterns
 
 This section documents every Effect concept used in the codebase and why it was chosen.
@@ -262,10 +346,14 @@ Each error has a discriminant `_tag` field (`"DatabaseError"` or `"InvalidQuery"
 - **Type narrowing** inside each handler (TypeScript knows the shape)
 - **Structured logging** (log `cause` for DB errors, `message` for validation)
 
-| Error | When it occurs | HTTP mapping |
-|-------|----------------|--------------|
-| `InvalidQuery` | Query params fail schema validation | `400 Bad Request` |
-| `DatabaseError` | Drizzle/Neon query throws or connection fails | `500 Internal Server Error` |
+| Error                  | When it occurs                                | HTTP mapping                |
+| ---------------------- | --------------------------------------------- | --------------------------- |
+| `InvalidQuery`         | Query params fail schema validation           | `400 Bad Request`           |
+| `DatabaseError`        | Drizzle/Neon query throws or connection fails | `500 Internal Server Error` |
+| `ArcjetBotError`       | Request identified as an automated bot        | `403 Forbidden`             |
+| `ArcjetShieldError`    | Arcjet WAF shield blocks the request          | `403 Forbidden`             |
+| `ArcjetRateLimitError` | Request exceeds the role-based rate limit     | `429 Too Many Requests`     |
+| `ArcjetError`          | `client.protect()` throws unexpectedly        | `500 Internal Server Error` |
 
 ### Schema Validation
 
@@ -278,10 +366,7 @@ export const ListSubjectsQuery = Schema.Struct({
   search: Schema.optional(Schema.String),
   department: Schema.optional(Schema.String),
   page: Schema.optionalWith(
-    Schema.NumberFromString.pipe(
-      Schema.int(),
-      Schema.greaterThanOrEqualTo(1),
-    ),
+    Schema.NumberFromString.pipe(Schema.int(), Schema.greaterThanOrEqualTo(1)),
     { default: () => 1 },
   ),
   limit: Schema.optionalWith(
@@ -299,12 +384,12 @@ export const ListSubjectsQuery = Schema.Struct({
 
 Validation rules:
 
-| Field | Type | Rules | Default |
-|-------|------|-------|---------|
-| `search` | string | optional | — |
-| `department` | string | optional | — |
-| `page` | integer | ≥ 1 | `1` |
-| `limit` | integer | 1–100 | `10` |
+| Field        | Type    | Rules    | Default |
+| ------------ | ------- | -------- | ------- |
+| `search`     | string  | optional | —       |
+| `department` | string  | optional | —       |
+| `page`       | integer | ≥ 1      | `1`     |
+| `limit`      | integer | 1–100    | `10`    |
 
 #### Express Query Normalization
 
@@ -323,10 +408,7 @@ This prevents schema failures on repeated query keys and keeps validation predic
 The Drizzle client is exposed as an Effect **Context tag**:
 
 ```typescript
-export class Database extends Context.Tag("Database")<
-  Database,
-  typeof db
->() {}
+export class Database extends Context.Tag("Database")<Database, typeof db>() {}
 
 export const DatabaseLive = Layer.succeed(Database, db);
 ```
@@ -359,12 +441,12 @@ export const listSubjects = (rawQuery: unknown) =>
 
 Key helpers inside the service:
 
-| Helper | Purpose |
-|--------|---------|
-| `tryDb(fn)` | Wraps a Promise in `Effect.tryPromise`, mapping failures to `DatabaseError` |
-| `buildWhereClause(params)` | Pure function building Drizzle `WHERE` from filters |
-| `countSubjects(db, where)` | `SELECT count(*)` with department join |
-| `fetchSubjects(db, where, limit, offset)` | Paginated select with nested department object |
+| Helper                                    | Purpose                                                                     |
+| ----------------------------------------- | --------------------------------------------------------------------------- |
+| `tryDb(fn)`                               | Wraps a Promise in `Effect.tryPromise`, mapping failures to `DatabaseError` |
+| `buildWhereClause(params)`                | Pure function building Drizzle `WHERE` from filters                         |
+| `countSubjects(db, where)`                | `SELECT count(*)` with department join                                      |
+| `fetchSubjects(db, where, limit, offset)` | Paginated select with nested department object                              |
 
 **Parallel queries:** `Effect.all(..., { concurrency: 2 })` runs the count and list queries simultaneously, reducing latency on Neon HTTP (each query is a separate round trip).
 
@@ -393,14 +475,17 @@ const response = await listSubjects(req.query).pipe(
     InvalidQuery: (error) =>
       Effect.succeed({ status: 400, body: { error: error.message } }),
     DatabaseError: (error) => {
-      console.error("GET /subjects error:", error)
-      return Effect.succeed({ status: 500, body: { error: "Failed to get subjects" } })
+      console.error("GET /subjects error:", error);
+      return Effect.succeed({
+        status: 500,
+        body: { error: "Failed to get subjects" },
+      });
     },
   }),
   Effect.runPromise,
-)
+);
 
-res.status(response.status).json(response.body)
+res.status(response.status).json(response.body);
 ```
 
 Why this pattern:
@@ -422,26 +507,26 @@ Pipe order matters:
 
 ### `departments`
 
-| Column | Type | Constraints |
-|--------|------|-------------|
-| `id` | integer | primary key, generated always as identity |
-| `code` | varchar(50) | not null, unique |
-| `name` | varchar(255) | not null |
-| `description` | varchar(255) | nullable |
-| `created_at` | timestamp | not null, default now |
-| `updated_at` | timestamp | not null, default now, auto-updated |
+| Column        | Type         | Constraints                               |
+| ------------- | ------------ | ----------------------------------------- |
+| `id`          | integer      | primary key, generated always as identity |
+| `code`        | varchar(50)  | not null, unique                          |
+| `name`        | varchar(255) | not null                                  |
+| `description` | varchar(255) | nullable                                  |
+| `created_at`  | timestamp    | not null, default now                     |
+| `updated_at`  | timestamp    | not null, default now, auto-updated       |
 
 ### `subjects`
 
-| Column | Type | Constraints |
-|--------|------|-------------|
-| `id` | integer | primary key, generated always as identity |
-| `code` | varchar(50) | not null, unique |
-| `name` | varchar(255) | not null |
-| `description` | varchar(255) | nullable |
-| `department_id` | integer | nullable, FK → `departments.id` (ON DELETE restrict) |
-| `created_at` | timestamp | not null, default now |
-| `updated_at` | timestamp | not null, default now, auto-updated |
+| Column          | Type         | Constraints                                          |
+| --------------- | ------------ | ---------------------------------------------------- |
+| `id`            | integer      | primary key, generated always as identity            |
+| `code`          | varchar(50)  | not null, unique                                     |
+| `name`          | varchar(255) | not null                                             |
+| `description`   | varchar(255) | nullable                                             |
+| `department_id` | integer      | nullable, FK → `departments.id` (ON DELETE restrict) |
+| `created_at`    | timestamp    | not null, default now                                |
+| `updated_at`    | timestamp    | not null, default now, auto-updated                  |
 
 ### Relations
 
@@ -482,12 +567,12 @@ Returns a paginated list of subjects. Each subject includes its associated depar
 
 All parameters are optional.
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `search` | string | Case-insensitive partial match on subject **name** or **code** |
-| `department` | string | Case-insensitive partial match on department **name** |
-| `page` | integer (≥ 1) | Page number. Default: `1` |
-| `limit` | integer (1–100) | Items per page. Default: `10` |
+| Parameter    | Type            | Description                                                    |
+| ------------ | --------------- | -------------------------------------------------------------- |
+| `search`     | string          | Case-insensitive partial match on subject **name** or **code** |
+| `department` | string          | Case-insensitive partial match on department **name**          |
+| `page`       | integer (≥ 1)   | Page number. Default: `1`                                      |
+| `limit`      | integer (1–100) | Items per page. Default: `10`                                  |
 
 Filters combine with **AND** logic. For example, `search=math&department=science` returns subjects matching both conditions.
 
@@ -525,13 +610,13 @@ Filters combine with **AND** logic. For example, `search=math&department=science
 }
 ```
 
-| Field | Description |
-|-------|-------------|
-| `data` | Array of subject records with nested `department` |
-| `pagination.page` | Current page number |
-| `pagination.limit` | Items per page |
-| `pagination.total` | Total matching records (before pagination) |
-| `pagination.totalPages` | `Math.ceil(total / limit)` |
+| Field                   | Description                                       |
+| ----------------------- | ------------------------------------------------- |
+| `data`                  | Array of subject records with nested `department` |
+| `pagination.page`       | Current page number                               |
+| `pagination.limit`      | Items per page                                    |
+| `pagination.total`      | Total matching records (before pagination)        |
+| `pagination.totalPages` | `Math.ceil(total / limit)`                        |
 
 If a subject has no department, `departmentId` is `null` and `department` column fields from the join may be `null`.
 
@@ -605,12 +690,14 @@ Create `src/features/<feature>/<action>.ts` as an Effect program:
 export const createSubject = (body: unknown) =>
   Effect.gen(function* () {
     const input = yield* Schema.decodeUnknown(CreateSubjectInput)(body).pipe(
-      Effect.mapError(() => new InvalidQuery({ message: "Invalid request body" })),
-    )
-    const db = yield* Database
+      Effect.mapError(
+        () => new InvalidQuery({ message: "Invalid request body" }),
+      ),
+    );
+    const db = yield* Database;
     // ... db logic wrapped in tryDb
-    return result
-  })
+    return result;
+  });
 ```
 
 ### 4. Create the route adapter
@@ -623,14 +710,16 @@ router.post("/", async (req, res) => {
     Effect.provide(DatabaseLive),
     Effect.map((result) => ({ status: 201, body: result })),
     Effect.catchTags({
-      InvalidQuery: (e) => Effect.succeed({ status: 400, body: { error: e.message } }),
-      DatabaseError: (e) => Effect.succeed({ status: 500, body: { error: "..." } }),
+      InvalidQuery: (e) =>
+        Effect.succeed({ status: 400, body: { error: e.message } }),
+      DatabaseError: (e) =>
+        Effect.succeed({ status: 500, body: { error: "..." } }),
       // SubjectNotFound: (e) => Effect.succeed({ status: 404, body: { error: "..." } }),
     }),
     Effect.runPromise,
-  )
-  res.status(response.status).json(response.body)
-})
+  );
+  res.status(response.status).json(response.body);
+});
 ```
 
 ### 5. Mount the router
@@ -638,8 +727,8 @@ router.post("/", async (req, res) => {
 Register in `src/index.ts`:
 
 ```typescript
-import subjectsRouter from "./routes/subjects"
-app.use("/api/subjects", subjectsRouter)
+import subjectsRouter from "./routes/subjects";
+app.use("/api/subjects", subjectsRouter);
 ```
 
 ### 6. Update schema & migrations (if needed)
@@ -655,13 +744,13 @@ pnpm db:migrate
 
 ## Scripts
 
-| Script | Command | Description |
-|--------|---------|-------------|
-| `dev` | `tsx watch src/index.ts` | Start dev server with hot reload |
-| `build` | `tsc` | Compile TypeScript to `dist/` |
-| `start` | `node dist/index.js` | Run production build |
-| `db:generate` | `drizzle-kit generate` | Generate migration from schema changes |
-| `db:migrate` | `drizzle-kit migrate` | Apply pending migrations |
+| Script        | Command                  | Description                            |
+| ------------- | ------------------------ | -------------------------------------- |
+| `dev`         | `tsx watch src/index.ts` | Start dev server with hot reload       |
+| `build`       | `tsc`                    | Compile TypeScript to `dist/`          |
+| `start`       | `node dist/index.js`     | Run production build                   |
+| `db:generate` | `drizzle-kit generate`   | Generate migration from schema changes |
+| `db:migrate`  | `drizzle-kit migrate`    | Apply pending migrations               |
 
 ---
 
@@ -670,7 +759,7 @@ pnpm db:migrate
 The app reads `PORT` from the environment (Railway, Render, Fly.io, etc. inject this automatically):
 
 ```typescript
-const PORT = process.env.PORT || 8000
+const PORT = process.env.PORT || 8000;
 ```
 
 Ensure `DATABASE_URL` is set in your hosting provider's environment variables.

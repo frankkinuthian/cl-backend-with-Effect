@@ -2,6 +2,7 @@ import express from "express";
 import subjectsRouter from "./routes/subjects";
 import departmentsRouter from "./routes/departments";
 import cors from "cors";
+import securityMiddleware from "./middleware/security";
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -17,6 +18,9 @@ app.use(
     credentials: true,
   }),
 );
+
+app.use(express.json());
+app.use(securityMiddleware)
 
 // Simple health/root endpoint.
 app.get("/", (req, res) => {
