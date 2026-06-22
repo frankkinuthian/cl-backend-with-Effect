@@ -3,6 +3,8 @@ import subjectsRouter from "./routes/subjects";
 import departmentsRouter from "./routes/departments";
 import cors from "cors";
 import securityMiddleware from "./middleware/security";
+import { toNodeHandler } from "better-auth/node";
+import { auth } from "./lib/auth";
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -19,8 +21,10 @@ app.use(
   }),
 );
 
+app.all("/api/auth/*splat", toNodeHandler(auth));
+
 app.use(express.json());
-app.use(securityMiddleware)
+app.use(securityMiddleware);
 
 // Simple health/root endpoint.
 app.get("/", (req, res) => {
