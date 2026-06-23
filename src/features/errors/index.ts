@@ -29,3 +29,7 @@ export class ArcjetError extends Schema.TaggedError<ArcjetError>()(
   "ArcjetError",
   { cause: Schema.Unknown },
 ) {}
+
+export class NotFound extends Schema.TaggedError<NotFound>()("NotFound", {
+  message: Schema.String,
+}) {}
