@@ -8,6 +8,7 @@ import usersRouter from "./routes/users.js";
 import classesRouter from "./routes/classes.js";
 import cors from "cors";
 import securityMiddleware from "./middleware/security.js";
+import sessionMiddleware from "./middleware/session.js";
 import { toNodeHandler } from "better-auth/node";
 import { auth } from "./lib/auth.js";
 
@@ -33,6 +34,7 @@ app.use(
 app.all("/api/auth/*splat", toNodeHandler(auth));
 
 app.use(express.json());
+app.use(sessionMiddleware);
 app.use(securityMiddleware);
 
 // Simple health/root endpoint.
