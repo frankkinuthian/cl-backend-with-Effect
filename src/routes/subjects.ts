@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 import express from "express";
-import { DatabaseLive } from "../features/database";
-import { listSubjects } from "../features/subjects/list-subjects";
+import { DatabaseLive } from "../features/database/index.js";
+import { listSubjects } from "../features/subjects/list-subjects.js";
 
 const router = express.Router();
 

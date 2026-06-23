@@ -1,11 +1,11 @@
 import { desc, ilike, sql, type SQL } from "drizzle-orm";
 import { Effect, Schedule, Schema } from "effect";
-import { db as DbClient } from "../../database";
-import { departments } from "../../database/schema";
-import { Database } from "../database";
-import { DatabaseError, InvalidQuery } from "../errors";
-import { ListDepartmentsQuery } from "./schemas";
-import { normalizeExpressQuery } from "../subjects/schemas"; // reuse
+import { db as DbClient } from "../../database/index.js";
+import { departments } from "../../database/schema/index.js";
+import { Database } from "../database/index.js";
+import { DatabaseError, InvalidQuery } from "../errors/index.js";
+import { ListDepartmentsQuery } from "./schemas.js";
+import { normalizeExpressQuery } from "../subjects/schemas.js";
 
 type WhereClause = SQL | undefined;
 

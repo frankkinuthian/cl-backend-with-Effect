@@ -1,7 +1,7 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { db } from "../database"; // your drizzle instance
-import * as schema from '../database/schema/auth'
+import { db } from "../database/index.js";
+import * as schema from "../database/schema/auth.js";
 
 const trustedOrigins = [
   process.env.FRONTEND_URL,

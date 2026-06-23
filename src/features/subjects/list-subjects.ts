@@ -9,11 +9,11 @@ import {
   type SQL,
 } from "drizzle-orm";
 import { Effect, Schedule, Schema } from "effect";
-import { db as DbClient } from "../../database";
-import { departments, subjects } from "../../database/schema";
-import { Database } from "../database";
-import { DatabaseError, InvalidQuery } from "../errors";
-import { ListSubjectsQuery, normalizeExpressQuery } from "./schemas";
+import { db as DbClient } from "../../database/index.js";
+import { departments, subjects } from "../../database/schema/index.js";
+import { Database } from "../database/index.js";
+import { DatabaseError, InvalidQuery } from "../errors/index.js";
+import { ListSubjectsQuery, normalizeExpressQuery } from "./schemas.js";
 
 type WhereClause = SQL | undefined;
 
